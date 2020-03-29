@@ -1,0 +1,329 @@
+
+################################################
+#Exercises fnal practicum Transcriptomics NGS processing
+################################################
+
+###
+#1# Differentially expressed genes between brain and liver and heatmap
+###
+
+sudo docker run -i -t -v ~/masteromics/transcriptomics/tutorial:/tutorial -w /tutorial ceciliaklein/teaching:uvic
+
+export PATH=$PATH:/tutorial/teaching-utils/;
+
+cd analysis
+
+#Differentially expressed genes between brain and liver:
+
+edgeR.analysis.R --input_matrix ../quantifications/encode.mouse.gene.expected_count.idr_NA.tsv \
+                 --metadata /tutorial/data/gene.quantifications.index.tsv \
+                 --fields tissue \
+                 --coefficient 3 \
+                 --output brain_X_liver
+
+#write a list with overexpressed genes in brain compared to liver
+
+awk '$NF<0.01 && $2<-10{print $1"\tover_brain_X_liver"}' edgeR.cpm1.n2.brain_X_liver.tsv > edgeR.0.01.over_brain_X_liver.txt
+
+#write a list with overexpressed genes in liver compared to brain
+
+awk '$NF<0.01 && $2>10 {print $1"\tover_liver_X_brain"}' edgeR.cpm1.n2.brain_X_liver.tsv > edgeR.0.01.over_liver_X_brain.txt
+
+# Count how many DEG are in each list:
+
+wc -l edgeR.0.01.over*.txt
+
+  #44 edgeR.0.01.over_brain_X_heart.txt
+  #118 edgeR.0.01.over_brain_X_liver.txt
+  #63 edgeR.0.01.over_heart_X_brain.txt
+  #107 edgeR.0.01.over_liver_X_brain.txt
+  #332 total
+
+#Show the results in a heatmap
+
+awk '$3=="gene"{ match($0, /gene_id "([^"]+).+gene_type "([^"]+)/, var); print var[1],var[2] }' OFS="\t" /tutorial/refs/gencode.vM4.gtf \
+| join.py --file1 stdin \
+          --file2 <(cat edgeR.0.01.over_brain_X_liver.txt edgeR.0.01.over_liver_X_brain.txt) \
+| sed '1igene\tedgeR\tgene_type' > gene.brainliver.edgeR.tsv
+
+cut -f1 gene.brainliver.edgeR.tsv \
+| tail -n+2 \
+| selectMatrixRows.sh - ../quantifications/encode.mouse.gene.TPM.idr_NA.tsv \
+| ggheatmap.R --width 5 \
+              			 --height 8 \
+              			 --col_metadata /tutorial/data/gene.quantifications.index.tsv \
+		                 --colSide_by tissue \
+		                 --col_labels labExpId \
+		                 --row_metadata gene.brainliver.edgeR.tsv \
+		                 --merge_row_mdata_on gene \
+		                 --rowSide_by edgeR,gene_type \
+		                 --row_labels none \
+		                 --log \
+		                 --pseudocount 0.1 \
+		                 --col_dendro \
+		                 --row_dendro \
+		                 --matrix_palette /tutorial/palettes/palDiverging.txt \
+			         --colSide_palette /tutorial/palettes/palTissue.txt \
+             			 --output heatmap.brain_X_liver.pdf
+
+###
+#2# Gene Ontology of the two sets with  GOstats 
+###
+
+#get the universe genes (already perfomred in class)
+awk '{split($10,a,/\"|\./); print a[2]}' /tutorial/refs/gencode.vM4.gtf | sort -u > universe.txt
+
+# BP brain_X_liver
+awk '{split($1,a,"."); print a[1]}' edgeR.0.01.over_brain_X_liver.txt \
+| GO_enrichment.R --universe universe.txt \
+                  --genes stdin \
+                  --categ BP \
+                  --output edgeR.over_brain_X_liver \
+                  --species mouse
+
+# BP liver_X_brain
+awk '{split($1,a,"."); print a[1]}' edgeR.0.01.over_liver_X_brain.txt \
+| GO_enrichment.R --universe universe.txt \
+                  --genes stdin \
+                  --categ BP \
+                  --output edgeR.over_liver_X_brain \
+                  --species mouse
+
+#To get the GO terms for plotting
+
+awk 'NR==1{$1="% "$1}{print $1,$2}' edgeR.over_brain_X_liver.BP.tsv > GO.over_brain_X_liver.BP.txt
+
+awk 'NR==1{$1="% "$1}{print $1,$2}' edgeR.over_liver_X_brain.BP.tsv > GO.over_liver_X_brain.BP.txt
+
+###
+#3# Differential Splicing (DS) using SUPPA, brain vs liver: SE (skipping exon), RI (intron retention), MX (mutually exclusive exon), AF (alternative first exon)
+###
+
+cd ../splicing
+
+#Calculate % events of Skipping Exon (SE) events (already done in class):
+event=SE; suppa.py psiPerEvent --total-filter 10 --ioe-file localEvents_${event}_strict.ioe --expression-file pc-tx.tsv -o PSI-${event}
+
+#Calculate % events of Intron Retention (RI) events:
+event=RI; suppa.py psiPerEvent --total-filter 10 --ioe-file localEvents_${event}_strict.ioe --expression-file pc-tx.tsv -o PSI-${event}
+
+#Calculate % events of Intron Retention (MX) events:
+event=MX; suppa.py psiPerEvent --total-filter 10 --ioe-file localEvents_${event}_strict.ioe --expression-file pc-tx.tsv -o PSI-${event}
+
+#Calculate % events of Intron Retention (AF) events:
+event=AF; suppa.py psiPerEvent --total-filter 10 --ioe-file localEvents_${event}_strict.ioe --expression-file pc-tx.tsv -o PSI-${event}
+
+
+
+#Calculate % SE for each tissue (already done in class):
+event=SE; for tissue in Brain Heart Liver ;do selectMatrixColumns.sh PRNAembryo${tissue}1:PRNAembryo${tissue}2 PSI-${event}.psi > ${tissue}.${event}.psi;done
+
+#Calculate % RI for brain and liver:
+event=RI; for tissue in Brain Liver ;do selectMatrixColumns.sh PRNAembryo${tissue}1:PRNAembryo${tissue}2 PSI-${event}.psi > ${tissue}.${event}.psi;done
+
+#Calculate % MX for brain and liver:
+event=MX; for tissue in Brain Liver ;do selectMatrixColumns.sh PRNAembryo${tissue}1:PRNAembryo${tissue}2 PSI-${event}.psi > ${tissue}.${event}.psi;done
+
+#Calculate % AF for brain and liver:
+event=AF; for tissue in Brain Liver ;do selectMatrixColumns.sh PRNAembryo${tissue}1:PRNAembryo${tissue}2 PSI-${event}.psi > ${tissue}.${event}.psi;done
+
+
+#Differential splicing analysis for local events: (Brain vs Liver)
+event=SE; suppa.py diffSplice --method empirical --input localEvents_${event}_strict.ioe --psi Brain.${event}.psi Liver.${event}.psi --tpm expr.Brain.tsv expr.Liver.tsv -c -gc -o DS.${event}
+event=RI; suppa.py diffSplice --method empirical --input localEvents_${event}_strict.ioe --psi Brain.${event}.psi Liver.${event}.psi --tpm expr.Brain.tsv expr.Liver.tsv -c -gc -o DS.${event}
+event=MX; suppa.py diffSplice --method empirical --input localEvents_${event}_strict.ioe --psi Brain.${event}.psi Liver.${event}.psi --tpm expr.Brain.tsv expr.Liver.tsv -c -gc -o DS.${event}
+event=AF; suppa.py diffSplice --method empirical --input localEvents_${event}_strict.ioe --psi Brain.${event}.psi Liver.${event}.psi --tpm expr.Brain.tsv expr.Liver.tsv -c -gc -o DS.${event}
+
+#Top cases (set a ratio threshold of <-0.4 / >0.4 for SE and AF; <-0.2 / >0.2 for RI and MX)
+event=SE; awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1 && $2!="nan" && ($2>0.4 || $2<-0.4) && $3<0.05{print}' DS.${event}.dpsi | wc -l #20
+event=RI; awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1 && $2!="nan" && ($2>0.2 || $2<-0.2) && $3<0.05{print}' DS.${event}.dpsi | wc -l #18
+event=MX; awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1 && $2!="nan" && ($2>0.2 || $2<-0.2) && $3<0.05{print}' DS.${event}.dpsi | wc -l #9
+event=AF; awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1 && $2!="nan" && ($2>0.4 || $2<-0.4) && $3<0.05{print}' DS.${event}.dpsi | wc -l #26
+
+#Heatmaps from top results
+
+event=SE; awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1 && $2!="nan" && ($2>0.4 || $2<-0.4) && $3<0.05{print}' DS.${event}.dpsi  > DS.${event}.topgenes.tsv
+event=RI; awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1 && $2!="nan" && ($2>0.2 || $2<-0.2) && $3<0.05{print}' DS.${event}.dpsi > DS.${event}.topgenes.tsv
+event=MX; awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1 && $2!="nan" && ($2>0.2 || $2<-0.2) && $3<0.05{print}' DS.${event}.dpsi  > DS.${event}.topgenes.tsv
+event=AF; awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1 && $2!="nan" && ($2>0.4 || $2<-0.4) && $3<0.05{print}' DS.${event}.dpsi  > DS.${event}.topgenes.tsv
+
+sed -i 's/PRNAembryoBrain/Brain_/g' ../data/gene.quantifications.index.tsv
+sed -i 's/PRNAembryoLiver/Liver_/g' ../data/gene.quantifications.index.tsv
+sed -i 's/PRNAembryoHeart/Heart_/g' ../data/gene.quantifications.index.tsv 
+
+event=SE; sed -i 's/Brain_/PRNAembryoBrain/g' DS.${event}.psivec
+event=RI; sed -i 's/Brain_/PRNAembryoBrain/g' DS.${event}.psivec
+event=MX; sed -i 's/Brain_/PRNAembryoBrain/g' DS.${event}.psivec
+event=AF; sed -i 's/Brain_/PRNAembryoBrain/g' DS.${event}.psivec
+event=SE; sed -i 's/Liver_/PRNAembryoLiver/g' DS.${event}.psivec
+event=RI; sed -i 's/Liver_/PRNAembryoLiver/g' DS.${event}.psivec
+event=MX; sed -i 's/Liver_/PRNAembryoLiver/g' DS.${event}.psivec
+event=AF; sed -i 's/Liver_/PRNAembryoLiver/g' DS.${event}.psivec
+
+event=SE; cut -f1 DS.${event}.topgenes.tsv \
+| tail -n+2 \
+| selectMatrixRows.sh - DS.${event}.psivec \
+| ggheatmap.R --width 5 \
+					              --height 8 \
+					              --col_metadata /tutorial/data/gene.quantifications.index.tsv \
+					              --colSide_by tissue \
+					              --col_labels labExpId \
+					              --row_labels none \
+					              --col_dendro \
+						      --base_size 10 \
+					              --matrix_palette /tutorial/palettes/palDiverging.txt \
+					              --colSide_palette /tutorial/palettes/palTissue.txt \
+				              	 --output heatmap.DS.${event}.brain_X_liver.pdf
+
+event=RI; cut -f1 DS.${event}.topgenes.tsv \
+| tail -n+2 \
+| selectMatrixRows.sh - DS.${event}.psivec \
+| ggheatmap.R --width 5 \
+					              --height 8 \
+					              --col_metadata /tutorial/data/gene.quantifications.index.tsv \
+					              --colSide_by tissue \
+					              --col_labels labExpId \
+					              --row_labels none \
+					              --col_dendro \
+								  --base_size 10 \
+					              --matrix_palette /tutorial/palettes/palDiverging.txt \
+					              --colSide_palette /tutorial/palettes/palTissue.txt \
+				              	 --output heatmap.DS.${event}.brain_X_liver.pdf
+
+event=MX; cut -f1 DS.${event}.topgenes.tsv \
+| tail -n+2 \
+| selectMatrixRows.sh - DS.${event}.psivec \
+| ggheatmap.R --width 5 \
+					              --height 8 \
+					              --col_metadata /tutorial/data/gene.quantifications.index.tsv \
+					              --colSide_by tissue \
+					              --col_labels labExpId \
+					              --row_labels none \
+					              --col_dendro \
+								  --base_size 10 \
+					              --matrix_palette /tutorial/palettes/palDiverging.txt \
+					              --colSide_palette /tutorial/palettes/palTissue.txt \
+				              	 --output heatmap.DS.${event}.brain_X_liver.pdf
+
+event=AF; cut -f1 DS.${event}.topgenes.tsv \
+| tail -n+2 \
+| selectMatrixRows.sh - DS.${event}.psivec \
+| ggheatmap.R --width 5 \
+					              --height 8 \
+					              --col_metadata /tutorial/data/gene.quantifications.index.tsv \
+					              --colSide_by tissue \
+					              --col_labels labExpId \
+					              --row_labels none \
+					              --col_dendro \
+								  --base_size 10 \
+					              --matrix_palette /tutorial/palettes/palDiverging.txt \
+					              --colSide_palette /tutorial/palettes/palTissue.txt \
+				              	 --output heatmap.DS.${event}.brain_X_liver.pdf
+
+###
+#4# Find H3K4me3 peaks shared by brain and liver and exclusive for each tissue
+###
+
+cd ../chip-analysis
+
+bedtools intersect -a ../results/CHIPembryoBrain.narrowPeak -b ../results/CHIPembryoLiver.narrowPeak -u > CHIP.Brain_X_Liver.narrowPeak
+bedtools intersect -a ../results/CHIPembryoBrain.narrowPeak -b ../results/CHIPembryoLiver.narrowPeak -v > CHIP.Brain_exclusive.narrowPeak
+bedtools intersect -a ../results/CHIPembryoLiver.narrowPeak -b ../results/CHIPembryoBrain.narrowPeak -v > CHIP.Liver_exclusive.narrowPeak
+
+wc -l CHIP.*.narrowPeak
+#18655 CHIP.Brain_X_Liver.narrowPeak
+#4812 CHIP.Brain_exclusive.narrowPeak
+#7113 CHIP.Liver_exclusive.narrowPeak
+
+#Bar plot
+
+wc -l CHIP*.narrowPeak | sed '4d' | awk '{print $2 "\t" $1}' | sed 's/CHIP.//g' | sed 's/.narrowPeak//g' | sed 's/_exclusive//g' > CHIP.Brain_X_Liver.counts.txt
+
+ggbarplot.R --input CHIP.Brain_X_Liver.counts.txt \
+							--output CHIP.Brain_X_Liver.counts.pdf \
+							--title Peaks_exclusive_or_shared_Brain_Liver \
+							--fill_by 1 \
+							--palette_fill /tutorial/palettes/palTissue.txt
+
+###
+#5# BED file of 200bp up/downstream TSS of genes and overlap DEG and peaks
+###
+
+#BED file of 200bp up/downstream TSS of genes:
+awk '$3=="gene" && $0~/gene_type "protein_coding"/{ match($0, /gene_id "([^"]+)/, id); print id[1] "\t" $1 "\t" $4-200 "\t" $4+200}' ../refs/gencode.vM4.gtf > TSS.up.down.200.bed
+
+#Check overlap DEGs, with the 3 sets of H3K4me3 peaks:
+
+#Intersect between TSS gene_ids and edgeR gene_ids:
+awk '{print $1}' TSS.up.down.200.bed > list1.TSS.bed
+awk '{print $1}' ../analysis/gene.brainliver.edgeR.tsv > list2.edgeR.tsv
+sort list1.TSS.bed list2.edgeR.tsv | uniq -d > intersect.TSS.edgeR
+
+##############Peaks both Brain and Liver###################
+
+#Intersect between TSS +-200bp genomic range and peaks genomic range :
+awk '{print $2 "\t" $3 "\t" $4 "\t" $1}' TSS.up.down.200.bed > list.a.TSS
+awk '{print $1 "\t" $2 "\t" $3}' CHIP.Brain_X_Liver.narrowPeak > list.b.CHIP
+bedtools intersect -a list.a.TSS -b list.b.CHIP -u > intersect.TSS.CHIP
+
+#Intersect between peaks in genes TSS and DEG genes:
+awk '{print $4}' intersect.TSS.CHIP > intersect.TSS.CHIP.gene_id
+sort intersect.TSS.edgeR intersect.TSS.CHIP.gene_id | uniq -d > genes.CHIP.BXL.edgeR
+wc -l genes.CHIP.BXL.edgeR    #44 genes
+
+##############Brain specific peaks###################
+
+#Intersect between TSS +-200bp genomic range and peaks genomic range:
+awk '{print $1 "\t" $2 "\t" $3}' CHIP.Brain_exclusive.narrowPeak > list.c.CHIP
+bedtools intersect -a list.a.TSS -b list.c.CHIP -u > intersect.TSS.CHIP.Brain
+
+#Intersect between peaks in genes TSS and DEG genes:
+awk '{print $4}' intersect.TSS.CHIP.Brain > intersect.TSS.CHIP.Brain.gene_id
+sort intersect.TSS.edgeR intersect.TSS.CHIP.Brain.gene_id | uniq -d > genes.CHIP.B.edgeR      
+wc -l genes.CHIP.B.edgeR  #13 genes
+
+##############Liver specific peaks###################
+
+#Intersect between TSS +-200bp genomic range and peaks genomic range:
+awk '{print $1 "\t" $2 "\t" $3}' CHIP.Liver_exclusive.narrowPeak > list.d.CHIP
+bedtools intersect -a list.a.TSS -b list.d.CHIP -u > intersect.TSS.CHIP.Liver
+
+#Intersect between peaks in genes TSS and DEG genes:
+awk '{print $4}' intersect.TSS.CHIP.Liver > intersect.TSS.CHIP.Liver.gene_id
+sort intersect.TSS.edgeR intersect.TSS.CHIP.Liver.gene_id | uniq -d > genes.CHIP.L.edgeR
+wc -l genes.CHIP.L.edgeR      #26 genes
+
+#Three examples of UCSC genome browser (RNAseq, ChIPseq and ATACseq tracks). 1 example of each peak set (shared peak, peak exclusive for brain, peaks exlusive for liver) 
+
+#1. gene with peak at TSS shared in both tissues that is DE: ENSMUSG00000000049.7
+
+cat genes.CHIP.BXL.edgeR | head
+grep ENSMUSG00000000049.7 intersect.TSS.CHIP
+# chr11:108343154-108343554
+
+#2. gene with peak at TSS specific for brain that is DE:  ENSMUSG00000029697.5
+
+cat genes.CHIP.B.edgeR | head
+grep ENSMUSG00000029697.5 intersect.TSS.CHIP.Brain
+#chr6:23244847-23245247
+
+#3. gene with peak at TSS specific for liver that is DE: ENSMUSG00000001155.9
+
+cat genes.CHIP.L.edgeR | head
+grep ENSMUSG00000001155.9 intersect.TSS.CHIP.Liver
+#chr10:76575448-76575848
+
+
+###
+#6# Two examples alternative first exons in the UCSC genome browser (RNAseq, ChIPseq, ATACseq tracks)
+###
+
+cd ../splicing
+
+# Select 2 examples with highest dPSI to show a good visualization at UCSC genome browser
+
+awk 'BEGIN{FS=OFS="\t"}NR==1{print }NR>1  && ($2>0.6 || $2<-0.6)' DS.AF.topgenes.tsv
+
+#ENSMUSG00000032126.11;AF:chr9:44342071-44342221:44342381:44342071-44344010:44344228:-	  0.7026755148	
+#ENSMUSG00000036002.8;AF:chr4:43037206-43039966:43040288:43037206-43045648:43045797:-	0.7832400683
+
